@@ -1,70 +1,99 @@
+import logging
 import os
-import time
-from tinkoff.invest import Client, OrderDirection, OrderType
-from tinkoff.invest.services import SandboxService
-from tinkoff.invest.utils import quotation_to_decimal
-from tinkoff.invest.constants import INVEST_GRPC_API_SANDBOX
+import asyncio
+from datetime import datetime
+from decimal import Decimal
 
-# Set your Tinkoff Invest Sandbox API token and account ID
-TINKOFF_SANDBOX_API_TOKEN = os.getenv("TINKOFF_SANDBOX_API_TOKEN", "t.fRiYtbf1zp3RiEeeztP59KBL4GWSZojqB8-2ndtu6CcRX9A9frdBbdRZMKJxD6wqSsjM7ECjc3b3cQNpkeQB1g")
-SANDBOX_ACCOUNT_ID = os.getenv("TINKOFF_SANDBOX_ACCOUNT_ID", "")
+from tinkoff.invest import MoneyValue
+from tinkoff.invest.sandbox.client import SandboxClient
+from tinkoff.invest.utils import decimal_to_quotation, quotation_to_decimal
 
-# Define the instrument to trade (e.g., SBER for Sberbank shares)
-INSTRUMENT_TICKER = "SBER"
-INSTRUMENT_FIGI = "BBG004730N88"  # Replace with the actual FIGI of the instrument
+TOKEN = os.environ["INVEST_TOKEN"]
 
-# Trading parameters
-TRADE_AMOUNT = 1  # Number of shares to trade
-BUY_THRESHOLD = 250.0  # Buy if price drops below this threshold
-SELL_THRESHOLD = 260.0  # Sell if price rises above this threshold
+logging.basicConfig(format="%(asctime)s %(levelname)s:%(message)s", level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
-def get_last_price(client, figi):
-    """Fetch the last price of the instrument."""
-    response = client.market_data.get_last_prices(figi=[figi])
-    return float(quotation_to_decimal(response.last_prices[0].price))
 
-def place_order(client, account_id, figi, direction, quantity, price):
-    """Place an order on the market."""
-    order_response = client.orders.post_order(
-        figi=figi,
-        quantity=quantity,
-        price=quotation_to_decimal(price),
-        direction=direction,
+def add_money_sandbox(client, account_id, money, currency="rub"):
+    """Function to add money to sandbox account."""
+    money = decimal_to_quotation(Decimal(money))
+    return client.sandbox.sandbox_pay_in(
         account_id=account_id,
-        order_type=OrderType.ORDER_TYPE_LIMIT,
+        amount=MoneyValue(units=money.units, nano=money.nano, currency=currency),
     )
-    return order_response
 
-def trading_strategy(client, account_id, figi):
-    """Simple trading strategy: Buy if price drops below threshold, sell if price rises above threshold."""
-    last_price = get_last_price(client, figi)
-    print(f"Last price of {INSTRUMENT_TICKER}: {last_price}")
-
-    # Buy if price drops below the buy threshold
-    if last_price < BUY_THRESHOLD:
-        print(f"Price dropped below {BUY_THRESHOLD}! Buying {TRADE_AMOUNT} shares of {INSTRUMENT_TICKER}...")
-        place_order(client, account_id, figi, OrderDirection.ORDER_DIRECTION_BUY, TRADE_AMOUNT, last_price)
-
-    # Sell if price rises above the sell threshold
-    elif last_price > SELL_THRESHOLD:
-        print(f"Price rose above {SELL_THRESHOLD}! Selling {TRADE_AMOUNT} shares of {INSTRUMENT_TICKER}...")
-        place_order(client, account_id, figi, OrderDirection.ORDER_DIRECTION_SELL, TRADE_AMOUNT, last_price)
 
 def main():
-    with Client(TINKOFF_SANDBOX_API_TOKEN, target=INVEST_GRPC_API_SANDBOX) as client:
-        print("Connected to Tinkoff Invest Sandbox API")
+    """Example - How to set/get balance for sandbox account.
+    How to get/close all sandbox accounts.
+    How to open new sandbox account."""
+    with SandboxClient(TOKEN) as client:
+        # get all sandbox accounts
 
-        # Ensure the sandbox account has funds
-        sandbox_service = SandboxService(client,[])
-        sandbox_service.sandbox_pay_in(account_id=SANDBOX_ACCOUNT_ID, amount=quotation_to_decimal(100000))
+        sandbox_accounts = client.users.get_accounts()
+        print(sandbox_accounts)
+        prices = client.market_data.get_last_prices(figi=['BBG004730N88', 'BBG004730ZJ9'])
+        print(prices)
+        for i in prices:
+            print(i)
+        """
+        # close all sandbox accounts
+        for sandbox_account in sandbox_accounts.accounts:
+            client.sandbox.close_sandbox_account(account_id=sandbox_account.id)
 
-        while True:
-            try:
-                trading_strategy(client, SANDBOX_ACCOUNT_ID, INSTRUMENT_FIGI)
-                time.sleep(60)  # Wait for 1 minute before checking again
-            except Exception as e:
-                print(f"Error: {e}")
-                time.sleep(60)  # Wait before retrying
+        # open new sandbox account
+        sandbox_account = client.sandbox.open_sandbox_account()
+        print(sandbox_account.account_id)
+        """
+        """
+        # account_id = sandbox_account.account_id
+        account_id = 'ae7ae550-4852-4eaa-99d9-5031f2ad235d'
+        # add initial 2 000 000 to sandbox account
+        print(add_money_sandbox(client=client, account_id=account_id, money=2000000))
+        logger.info(
+            "positions: %s", client.operations.get_positions(account_id=account_id)
+        )
+        print(
+            "money: ",
+            float(
+                quotation_to_decimal(
+                    client.operations.get_positions(account_id=account_id).money[0]
+                )
+            ),
+        )
+
+        logger.info("orders: %s", client.orders.get_orders(account_id=account_id))
+        logger.info(
+            "positions: %s", client.operations.get_positions(account_id=account_id)
+        )
+        logger.info(
+            "portfolio: %s", client.operations.get_portfolio(account_id=account_id)
+        )
+        logger.info(
+            "operations: %s",
+            client.operations.get_operations(
+                account_id=account_id,
+                from_=datetime(2023, 1, 1),
+                to=datetime(2023, 2, 5),
+            ),
+        )
+        logger.info(
+            "withdraw_limits: %s",
+            client.operations.get_withdraw_limits(account_id=account_id),
+        )
+
+        # add + 2 000 000 to sandbox account, total is 4 000 000
+        print(add_money_sandbox(client=client, account_id=account_id, money=2000000))
+        logger.info(
+            "positions: %s", client.operations.get_positions(account_id=account_id)
+        )
+        
+        # close new sandbox account
+        sandbox_account = client.sandbox.close_sandbox_account(
+            account_id=sandbox_account.account_id
+        )
+        print(sandbox_account)
+        """
 
 if __name__ == "__main__":
     main()
